@@ -1,16 +1,15 @@
-#include <stdio.h>
+/***
+ *                         _     _   _         
+ *                        | |   | | | |        
+ *      _ __ __ ___      _| |__ | |_| |_ _ __  
+ *     | '__/ _` \ \ /\ / / '_ \| __| __| '_ \ 
+ *     | | | (_| |\ V  V /| | | | |_| |_| |_) |
+ *     |_|  \__,_| \_/\_/ |_| |_|\__|\__| .__/ 
+ *                                      | |    
+ *                                      |_|    
+ */
 
-#define HTTP_STATUS_CONTINUE "100"
-#define HTTP_STATUS_OK "200"
-#define HTTP_STATUS_CREATED "201"
-#define HTTP_STATUS_BAD_REQUEST "400"
-#define HTTP_STATUS_UNAUTHORIZED "401"
-#define HTTP_STATUS_FORBIDDEN "403"
-#define HTTP_STATUS_NOT_FOUND "404"
-#define HTTP_STATUS_METHOD_NOT_ALLOWED "405"
-#define HTTP_STATUS_INTERNAL_SERVER_ERROR "500"
-#define HTTP_STATUS_NOT_IMPLEMENTED "501"
-#define HTTP_STATUS_SERVICE_NOT_AVAILABLE "503"
+#include <stdio.h>
 
 typedef enum
 {
@@ -37,6 +36,13 @@ typedef struct
 	rawhttp_hash_table ht;
 } rawhttp_header;
 
+// Struct received in the handler callback used to fetch information about the HTTP request.
+// method: http method (duh)
+// data: this is a pointer to the raw HTTP request data. You don't need to directly access this field
+// uri: the received URI, also known as the endpoint...
+// uri_size: size of the uri in bytes
+// header: all received headers. Please use the function rawhttp_header_get to retrieve the headers, since this is actually a hash table
+// connected_socket: connection socket's file descriptor, managed internally by rawhttp
 typedef struct {
 	rawhttp_method method;
 	const char* data;
@@ -53,16 +59,27 @@ typedef struct {
 	long long value_size;
 } rawhttp_response_header;
 
+// Struct received in the handler callback used to set information about the HTTP response you want to send.
+// headers: all response headers. Use the function rawhttp_response_add_header to add new headers here.
+// headers_size: size of headers, used internally by rawhttp
+// headers_capacity: capacity of headers, used internally by rawhttp
+// response_content: a pointer to the response body. You need to set this field before calling rawhttp_response_flush!
+// response_content_size: size, in bytes, of response_content. You also need to set this field before calling rawhttp_response_flush!
+// status_code: response's status code. Default value is 200, feel free to change it.
 typedef struct {
 	rawhttp_response_header* headers;
 	long long headers_size;
 	long long headers_capacity;
 	char* response_content;
 	long long response_content_size;
-	char* status_code;
+	int status_code;
 } rawhttp_response;
 
-// function that the client will create to handle requests for a specific path
+// This is the callback function you must implement for each handler you register. All action happens inside this function.
+// Use rawhttp_server_register_handle to register a new handler.
+// connection: used internally by rawhttp. You just need to forward this parameter to rawhttp_response_flush
+// request: has information about the HTTP request. See rawhttp_request struct for more details
+// response: allows you to set the HTTP response. See rawhttp_response struct for more details
 typedef void (*rawhttp_server_handle_func)(const void* connection, const rawhttp_request* request, rawhttp_response* response);
 
 typedef struct {
@@ -89,6 +106,7 @@ typedef struct {
 typedef struct {
 	int sockfd;
 	int port;
+	int initialized;
 	rawhttp_handler_tree handlers;
 } rawhttp_server;
 
@@ -110,16 +128,87 @@ typedef enum {
 	rawhttp_ht_hash_TABLE_PUT_ALREADY_EXISTS_ERROR = 9
 } rawhttp_error_code;
 
+// rawhttp's error code. This value shall be set when one of rawhttp functions fail.
+// You can call rawhttp_strerror to get more information.
 int rawhttp_error;
+// You can set rawhttp_log_stream if you want rawhttp to generate logs.
+// For example, you can set it to stderr to make it log to standard error.
+// Very useful for debug purposes.
+// Plase set rawhttp_log_stream before calling rawhttp_server_listen!
 FILE* rawhttp_log_stream;
 
+// Initializes a new rawhttp_server struct. This function will not start the server.
+//
+// server (input/output): Struct to be initialized. Must be provided.
+// port (input): The port that the server will use, when started
+// Return value: 0 if success, -1 if error
 int rawhttp_server_init(rawhttp_server* server, int port);
-// @TODO: implement server stop/destroy
+// Destroys an initialized rawhttp_server struct. If the server is listening, this function will also shutdown the server and release resources.
+// rawhttp_server_init must have been called before calling this function.
+//
+// server (input): Reference to the server to be destroyed
+// Return value: 0 if success, -1 if error
+int rawhttp_server_destroy(rawhttp_server* server);
+// Register a new handle. Must be called before calling rawhttp_server_listen.
+// The pattern defines how rawhttp will treat the handle. If the pattern ends with a slash (/), the handle will be called
+// regardless of what comes after the slash, unless there is a more specific handler registered.
+// If, however, the pattern doesn't end with a slash (/), the handle will only be called for its specific endpoint.
+// Example: if you register 3 handlers using these 3 different patterns:
+// #1: /bar
+// #2: /foo/
+// #3: /foo/bar
+// Then, the following endpoint calls will invoke the following handlers:
+// your-server:80/bar -> invokes #1 (/bar)
+// your-server:80/bar/ -> no handler associated.
+// your-server:80/foo/ -> invokes #2 (/foo/)
+// your-server:80/foo/dummy -> invokes #2 (/foo/)
+// your-server:80/foo/bar -> invokes #3 (/foo/bar)
+// your-server:80/foo/bar/dummy -> invokes #2 (/foo/)
+//
+// server (input): Initialized rawhttp_server
+// pattern (input): The pattern to be registered.
+// pattern_size (input): The size, in bytes, of the pattern being registered
+// handle (input): The callback function that rawhttp will call when this handle is triggered
 int rawhttp_server_register_handle(rawhttp_server* server, const char* pattern, long long pattern_size, rawhttp_server_handle_func handle);
+// Starts listening for HTTP calls. This function is the one that opens the server
+// This function blocks!
+// If you are implementing a more 'serious' code, please consider creating a separate thread to call this function, and then
+// call rawhttp_server_destroy to shutdown the server when exiting
+//
+// server (input): Initialized rawhttp_server
 int rawhttp_server_listen(rawhttp_server* server);
-void rawhttp_response_add_header(rawhttp_response* response, const char* header, long long header_size, const char* value, long long value_size);
-const rawhttp_header_value* rawhttp_header_get(const rawhttp_header* http_header, const char* request_field, long long request_field_size);
+// Flushes the HTTP response to the client.
+// This function must ONLY be called inside the rawhttp_server_handle_func callback, which is registered via rawhttp_server_register_handle
+// Also, this function can only be called a single time, otherwise multiple HTTP packets will be sent.
+// You must set response->response_content before calling this function. This value will be used as the response body to the client.
+// Please also set response->response_content_size with the size of your content.
+//
+// _connection (input): the connection parameter received in the callback must be sent here. This is used internally by rawhttp.
+// response (input): struct containing the response information. It is also received in the callback. However, you should modify it.
 ssize_t rawhttp_response_flush(const void* _connection, rawhttp_response* response);
+// Add a new header to the HTTP response.
+// This function must ONLY be called inside the rawhttp_server_handle_func callback, which is registered via rawhttp_server_register_handle
+// You must call this function before rawhttp_response_flush
+// Please use this function to add headers. Do not modify the response struct directly
+//
+// response (input): struct containing the response information. It is received in the callback.
+// header (input): The new header name
+// header_size (input): Size of header name
+// value (input): Value of header
+// header_size (input): Size of the value of header
+void rawhttp_response_add_header(rawhttp_response* response, const char* header, long long header_size, const char* value, long long value_size);
+// Retrieve the value of a header received in the HTTP request
+// This function must ONLY be called inside the rawhttp_server_handle_func callback, which is registered via rawhttp_server_register_handle
+//
+// http_header (input): This field is accessible via request->header. The request struct is received as a parameter in the callback
+// header (input): The name of the header
+// header_size (input): The size of the name of the header
+const rawhttp_header_value* rawhttp_header_get(const rawhttp_header* http_header, const char* header, long long header_size);
+// Get the description of an error
+// You can call this function to get an error description when one of rawhttp functions fail.
+// For debugging, please prefer using rawhttp_log_stream to see the full logs instead of using this function
+//
+// rawhttp_error (input): The error code. You must send the global variable rawhttp_error here.
 char* rawhttp_strerror(int rawhttp_error);
 
 /***
@@ -167,6 +256,8 @@ typedef struct {
  *                  |___/ |___/         |___/ 
  */
 
+static pthread_mutex_t rawhttp_log_mutex;
+
 char* rawhttp_strerror(int rawhttp_error)
 {
 	switch (rawhttp_error)
@@ -186,15 +277,16 @@ char* rawhttp_strerror(int rawhttp_error)
 
 void rawhttp_log(char* message, ...)
 {
-	// @TODO: this must be thread safe!
 	if (rawhttp_log_stream)
 	{
+		pthread_mutex_lock(&rawhttp_log_mutex);
 		fprintf(stderr, "rawhttp: ");
 		va_list argptr;
 		va_start(argptr, message);
 		vfprintf(stderr, message, argptr);
 		va_end(argptr);
 		fprintf(stderr, "\n");
+		pthread_mutex_unlock(&rawhttp_log_mutex);
 	}
 }
 
@@ -383,7 +475,7 @@ int rawhttp_response_new(rawhttp_response* response)
 	response->headers_size = 0;
 	response->headers_capacity = 32;
 	response->headers = calloc(response->headers_capacity, sizeof(rawhttp_response_header));
-	response->status_code = HTTP_STATUS_OK;
+	response->status_code = 200;
 	return 0;
 }
 
@@ -440,7 +532,7 @@ ssize_t rawhttp_response_flush(const void* _connection, rawhttp_response* respon
 	headers_db.capacity = 1024;
 	headers_db.size = 0;
 
-	int status_line_written = sprintf(buffer, "HTTP/1.1 %s\r\n", response->status_code);
+	int status_line_written = sprintf(buffer, "HTTP/1.1 %d\r\n", response->status_code);
 	rawhttp_response_dynamic_buffer_add(&headers_db, buffer, status_line_written);
 
 	for (long long i = 0; i < response->headers_size; ++i)
@@ -483,17 +575,17 @@ static int rawhttp_header_create(rawhttp_header* http_header, unsigned long long
 	return rawhttp_ht_hash_table_create(&http_header->ht, capacity, sizeof(rawhttp_header_value));
 }
 
-const rawhttp_header_value* rawhttp_header_get(const rawhttp_header* http_header, const char* request_field, long long request_field_size)
+const rawhttp_header_value* rawhttp_header_get(const rawhttp_header* http_header, const char* header, long long header_name)
 {
-	return rawhttp_ht_hash_table_get(&http_header->ht, request_field, request_field_size);
+	return rawhttp_ht_hash_table_get(&http_header->ht, header, header_name);
 }
 
-static int rawhttp_header_put(rawhttp_header* http_header, const char* request_field, long long request_field_size, const char* value, long long value_size)
+static int rawhttp_header_put(rawhttp_header* http_header, const char* header, long long header_size, const char* value, long long value_size)
 {
 	rawhttp_header_value rhv;
 	rhv.value = value;
 	rhv.value_size = value_size;
-	return rawhttp_ht_hash_table_put(&http_header->ht, request_field, request_field_size, &rhv);
+	return rawhttp_ht_hash_table_put(&http_header->ht, header, header_size, &rhv);
 }
 
 static int rawhttp_header_destroy(rawhttp_header* http_header)
@@ -512,8 +604,8 @@ static int rawhttp_header_destroy(rawhttp_header* http_header)
  *                                    
  */
 
-#define RAWHTTP_PARSER_CHUNK_SIZE 1
-#define RAWHTTP_PARSER_BUFFER_INITIAL_SIZE 1 // Must be greater than RAWHTTP_PARSER_CHUNK_SIZE
+#define RAWHTTP_PARSER_CHUNK_SIZE 1024
+#define RAWHTTP_PARSER_BUFFER_INITIAL_SIZE 1024 // Must be greater than RAWHTTP_PARSER_CHUNK_SIZE
 #define RAWHTTP_PARSER_REQUEST_HEADER_DEFAULT_CAPACITY 16
 
 typedef struct {
@@ -837,6 +929,11 @@ static int rawhttp_handler_tree_create(rawhttp_handler_tree* tree, long long cap
 	return 0;
 }
 
+static void rawhttp_handler_tree_destroy(rawhttp_handler_tree* tree)
+{
+	free(tree->elements);
+}
+
 static long long rawhttp_handler_tree_pattern_get_levels(const char* pattern, long long pattern_size, int is_subtree_root)
 {
 	long long levels = 0, pos = 0;
@@ -1041,7 +1138,7 @@ int rawhttp_server_init(rawhttp_server* server, int port)
 {
 	if (rawhttp_handler_tree_create(&server->handlers, 16 /* change me */))
 		return -1;
-
+	
 	server->sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	// workaround for dev purposes (avoiding error binding socket: Address already in use)
@@ -1073,6 +1170,26 @@ int rawhttp_server_init(rawhttp_server* server, int port)
 	}
 
 	server->port = port;
+	pthread_mutex_init(&rawhttp_log_mutex, NULL);
+	server->initialized = true;
+
+	return 0;
+}
+
+int rawhttp_server_destroy(rawhttp_server* server)
+{
+	// Note: Calling this function will not kill running threads
+	// The server socket will be released, causing the listen thread to eventually stop
+	// But there may be other threads running with opened connections
+	// @TODO: This should be fixed asap. Then the log mutex can also be destroyed.
+	if (server->initialized)
+	{
+		shutdown(server->sockfd, SHUT_RDWR);
+		close(server->sockfd);
+		rawhttp_log("Server stopped");
+		rawhttp_handler_tree_destroy(&server->handlers);
+		//pthread_mutex_destroy(&rawhttp_log_mutex);
+	}
 
 	return 0;
 }
@@ -1088,57 +1205,53 @@ static void* rawhttp_server_new_connection_callback(void* arg)
 	char* client_ip_ascii = inet_ntoa(connection->client_address.sin_addr);
 	rawhttp_log("Accepted connection from client %s", client_ip_ascii);
 
-	for (;;)
+	rawhttp_request request;
+	rawhttp_parser_header_buffer phb;
+	if (rawhttp_parser_header_buffer_create(&phb))
 	{
-		rawhttp_request request;
-		rawhttp_parser_header_buffer phb;
-		if (rawhttp_parser_header_buffer_create(&phb))
-		{
-			rawhttp_log("Error creating parsing buffer");
-			break;
-		}
-		if (rawhttp_parser_parse(&phb, &request, connection->connected_socket))
-		{
-			rawhttp_log("Error parsing HTTP packet. Connection was dropped or syntax was invalid");
-			rawhttp_log("Connection with client %s will be destroyed", client_ip_ascii);
-			rawhttp_parser_header_buffer_destroy(&phb);
-			break;
-		}
-
-		const rawhttp_server_handler* handler = rawhttp_handler_tree_get(&connection->server->handlers, request.uri, request.uri_size);
-		if (handler)
-		{
-			rawhttp_response response;
-			if (rawhttp_response_new(&response))
-			{
-				rawhttp_log("Error creating new rawhttp_response");
-				rawhttp_header_destroy(&request.header);
-				rawhttp_parser_header_buffer_destroy(&phb);
-				break;
-			}
-			handler->handle(connection, &request, &response);
-			if (rawhttp_response_destroy(&response))
-			{
-				rawhttp_log("Error destroying rawhttp_response");
-				rawhttp_header_destroy(&request.header);
-				rawhttp_parser_header_buffer_destroy(&phb);
-				break;
-			}
-		}
-		else
-		{
-			char buf[] = "HTTP/1.0 404 Not Found\n"
-				"Connection: Keep-Alive\n"
-				"Content-Length: 9\n"
-				"\n"
-				"404 Error";
-			write(request.connected_socket, buf, sizeof(buf) - 1);
-		}
-
-		// dealloc request
-		rawhttp_header_destroy(&request.header);
-		rawhttp_parser_header_buffer_destroy(&phb);
+		rawhttp_log("Error creating parsing buffer");
+		return NULL;
 	}
+	if (rawhttp_parser_parse(&phb, &request, connection->connected_socket))
+	{
+		rawhttp_log("Error parsing HTTP packet. Connection was dropped or syntax was invalid");
+		rawhttp_log("Connection with client %s will be destroyed", client_ip_ascii);
+		rawhttp_parser_header_buffer_destroy(&phb);
+		return NULL;
+	}
+
+	const rawhttp_server_handler* handler = rawhttp_handler_tree_get(&connection->server->handlers, request.uri, request.uri_size);
+	if (handler)
+	{
+		rawhttp_response response;
+		if (rawhttp_response_new(&response))
+		{
+			rawhttp_log("Error creating new rawhttp_response");
+			rawhttp_header_destroy(&request.header);
+			rawhttp_parser_header_buffer_destroy(&phb);
+			return NULL;
+		}
+		handler->handle(connection, &request, &response);
+		if (rawhttp_response_destroy(&response))
+		{
+			rawhttp_log("Error destroying rawhttp_response");
+			rawhttp_header_destroy(&request.header);
+			rawhttp_parser_header_buffer_destroy(&phb);
+			return NULL;
+		}
+	}
+	else
+	{
+		char buf[] = "HTTP/1.0 404 Not Found\n"
+			"Connection: Keep-Alive\n"
+			"Content-Length: 9\n"
+			"\n"
+			"404 Error";
+		write(request.connected_socket, buf, sizeof(buf) - 1);
+	}
+
+	rawhttp_header_destroy(&request.header);
+	rawhttp_parser_header_buffer_destroy(&phb);
 
 	close(connection->connected_socket);
 	free(connection);
@@ -1163,6 +1276,12 @@ int rawhttp_server_listen(rawhttp_server* server)
 		int connected_socket = accept(server->sockfd, (struct sockaddr*)&client_address, &client_address_length);
 		if (connected_socket == -1)
 		{
+			if (errno == EBADF)
+			{
+				// Server socket was closed. Exiting gracefully..
+				rawhttp_log("Server socket was closed. Exiting gracefully...");
+				return 0;
+			}
 			rawhttp_error = RAWHTTP_ACCEPT_ERROR;
 			rawhttp_log("Error accepting socket connection: %s", strerror(errno));
 			return -1;
