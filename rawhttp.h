@@ -374,9 +374,6 @@ static const void* rawhttp_ht_hash_table_get(const rawhttp_hash_table* ht, const
 		// Test if the key is equal
 		if (key_size != current_element->key_size || !strncmp(key, current_element->key, key_size))
 			return rawhttp_ht_get_value_on_index(ht, hash_table_position);
-		// If the key is not equal, we check if the hash is equal... If it is, we shall keep searching
-		if (requested_key_hash != rawhttp_ht_hash(current_element->key, current_element->key_size))
-			break;
 
 		hash_table_position = (hash_table_position + 1) % ht->capacity;
 		++positions_scanned;
@@ -407,7 +404,7 @@ static int rawhttp_ht_hash_table_put(rawhttp_hash_table* ht, const char* key, lo
 		else
 		{
 			// Just for safety, we check if the key is the same to throw an error
-			if (key_size == current_element->key_size && strncmp(key, current_element->key, key_size))
+			if (key_size == current_element->key_size && !strncmp(key, current_element->key, key_size))
 			{
 				rawhttp_error = rawhttp_ht_hash_TABLE_PUT_ALREADY_EXISTS_ERROR;
 				rawhttp_log(rawhttp_strerror(rawhttp_error));
